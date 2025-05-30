@@ -9,76 +9,73 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.LocalDateTime;
-import java.util.Random;
+
+// Added imports
+import com.example.paymentservice.service.strategy.PaymentStrategy;
+import com.example.paymentservice.service.strategy.PaymentStrategyFactory;
+import com.example.paymentservice.service.strategy.PaymentProcessingResult;
+
 
 @Service
 public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final OrderServiceClient orderServiceClient;
-    private final Random random = new Random(); // For simulating payment success/failure
+    private final PaymentStrategyFactory paymentStrategyFactory; // Added
 
     @Autowired
-    public PaymentService(PaymentRepository paymentRepository, OrderServiceClient orderServiceClient) {
+    public PaymentService(PaymentRepository paymentRepository, 
+                          OrderServiceClient orderServiceClient, 
+                          PaymentStrategyFactory paymentStrategyFactory) { // Updated constructor
         this.paymentRepository = paymentRepository;
         this.orderServiceClient = orderServiceClient;
+        this.paymentStrategyFactory = paymentStrategyFactory; // Added
     }
 
     @Transactional
     public PaymentResponse processPayment(PaymentRequest paymentRequest) {
-        // Check if payment for this order already exists and is successful
         paymentRepository.findByOrderId(paymentRequest.getOrderId()).ifPresent(existingPayment -> {
             if ("SUCCESSFUL".equals(existingPayment.getStatus())) {
                 throw new IllegalStateException("Payment for order " + paymentRequest.getOrderId() + " has already been processed successfully.");
             }
-            // If payment exists but failed or is pending, could allow retry or handle as per business logic.
-            // For simplicity, we'll create a new payment attempt record or update if suitable.
-            // Here, we assume new attempt or overwrite if exists and not successful.
         });
 
+        Payment payment = paymentRepository.findByOrderId(paymentRequest.getOrderId())
+                                        .filter(p -> !"SUCCESSFUL".equals(p.getStatus()))
+                                        .orElseGet(Payment::new); 
 
-        Payment payment = new Payment();
         payment.setOrderId(paymentRequest.getOrderId());
         payment.setAmount(paymentRequest.getAmount());
-        payment.setPaymentMethod(paymentRequest.getPaymentMethod()); // Was: paymentRequest.getPaymentMethodDetails().getOrDefault("method", "UNKNOWN")
+        payment.setPaymentMethod(paymentRequest.getPaymentMethod()); 
         payment.setStatus("PENDING");
-        payment.setPaymentDate(LocalDateTime.now()); // Or use @PrePersist
+        payment.setPaymentDate(LocalDateTime.now()); 
 
-        Payment savedPayment = paymentRepository.save(payment);
+        Payment savedPayment = paymentRepository.save(payment); 
 
-        // Simulate payment processing
-        boolean paymentSuccessful = simulatePaymentGateway(paymentRequest);
+        // Get strategy and process payment
+        PaymentStrategy strategy = paymentStrategyFactory.getStrategy(paymentRequest.getPaymentMethod());
+        PaymentProcessingResult processingResult = strategy.executePayment(paymentRequest);
 
-        if (paymentSuccessful) {
-            savedPayment.setStatus("SUCCESSFUL");
+        savedPayment.setStatus(processingResult.getStatus()); 
+
+        if (processingResult.isSuccessful()) {
             orderServiceClient.updateOrderStatus(savedPayment.getOrderId(), "PAID");
         } else {
-            savedPayment.setStatus("FAILED");
             orderServiceClient.updateOrderStatus(savedPayment.getOrderId(), "PAYMENT_FAILED");
         }
 
-        Payment finalPaymentState = paymentRepository.save(savedPayment);
+        Payment finalPaymentState = paymentRepository.save(savedPayment); 
         return mapToPaymentResponse(finalPaymentState);
     }
 
     public PaymentResponse getPaymentStatusByOrderId(Long orderId) {
         Payment payment = paymentRepository.findByOrderId(orderId)
-                .orElseThrow(() -> new RuntimeException("Payment not found for orderId: " + orderId)); // Consider custom exception
+                .orElseThrow(() -> new RuntimeException("Payment not found for orderId: " + orderId)); 
         return mapToPaymentResponse(payment);
     }
 
-    private boolean simulatePaymentGateway(PaymentRequest paymentRequest) {
-        // Simple simulation: 50/50 chance of success
-        // In a real scenario, this would involve calling an actual payment gateway API
-        // and handling its response.
-        // For "MOCK_CREDIT_CARD_FAIL" method, always fail.
-        if ("MOCK_CREDIT_CARD_FAIL".equalsIgnoreCase(paymentRequest.getPaymentMethod())) {
-            return false;
-        }
-        return random.nextBoolean();
-    }
+    // Removed simulatePaymentGateway method
 
     private PaymentResponse mapToPaymentResponse(Payment payment) {
         PaymentResponse response = new PaymentResponse();
